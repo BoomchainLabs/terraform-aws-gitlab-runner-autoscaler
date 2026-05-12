@@ -128,6 +128,11 @@ resource "aws_iam_instance_profile" "runner_manager" {
   tags = local.tags
 }
 
+resource "aws_iam_role_policy_attachment" "runner_manager_ssm_managed_instance_core" {
+  role       = aws_iam_role.runner_manager.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 
 resource "aws_instance" "runner_manager" {
   ami                  = data.aws_ami.amazon_linux_2.id
@@ -237,6 +242,19 @@ resource "aws_launch_template" "gitlab_runner_instance" {
       tags          = local.tags
     }
   }
+
+  dynamic "cpu_options" {
+    for_each = local.runner_instances[each.key].cpu_options == null ? [] : [local.runner_instances[each.key].cpu_options]
+
+    content {
+      core_count            = try(cpu_options.value.core_count, null)
+      threads_per_core      = try(cpu_options.value.threads_per_core, null)
+      amd_sev_snp           = try(cpu_options.value.amd_sev_snp, null)
+      nested_virtualization = try(cpu_options.value.nested_virtualization, null)
+    }
+  }
+
+
 
   tags = local.tags
 
