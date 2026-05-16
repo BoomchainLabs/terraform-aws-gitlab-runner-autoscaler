@@ -1,4 +1,6 @@
+# trivy:ignore:AVD-AWS-0104 Runners execute arbitrary CI jobs and require broad outbound access (container registries, package mirrors, user-defined endpoints).
 resource "aws_security_group" "runner" {
+  #checkov:skip=CKV_AWS_382:Runners execute arbitrary CI jobs and require broad outbound access; consumers should restrict via VPC endpoints/NACLs if needed.
   name_prefix = "gitlab-runner"
   description = "Security group for GitLab Runner instances"
   vpc_id      = var.aws_vpc_id
@@ -20,6 +22,7 @@ resource "aws_security_group" "runner" {
   }
 
   egress {
+    description = "Allow all outbound traffic for CI workloads"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -29,15 +32,25 @@ resource "aws_security_group" "runner" {
   tags = local.tags
 }
 
+# trivy:ignore:AVD-AWS-0104 Manager must reach GitLab and AWS API endpoints on the public internet; egress is port-restricted to HTTPS and DNS.
 resource "aws_security_group" "runner_manager" {
   name_prefix = "gitlab-runner-manager"
   description = "Security group for the GitLab Runner Manager instance"
   vpc_id      = var.aws_vpc_id
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "Allow HTTPS to GitLab and AWS API endpoints"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Allow DNS resolution"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -136,14 +149,20 @@ resource "aws_iam_role_policy_attachment" "runner_manager_ssm_managed_instance_c
 
 resource "aws_instance" "runner_manager" {
   ami                  = data.aws_ami.amazon_linux_2.id
-  instance_type        = "t2.nano"
+  instance_type        = var.runner_manager_instance_type
   iam_instance_profile = aws_iam_instance_profile.runner_manager.name
 
   associate_public_ip_address = false
+  ebs_optimized               = true
+  monitoring                  = true
 
   vpc_security_group_ids = [aws_security_group.runner_manager.id]
 
   subnet_id = var.aws_subnet_ids[0]
+
+  root_block_device {
+    encrypted = true
+  }
 
   user_data = base64encode(templatefile("${path.module}/templates/runner_manager_user_data.tftpl", {
     aws_region         = data.aws_region.current.name,
@@ -155,6 +174,12 @@ resource "aws_instance" "runner_manager" {
     gitlab_runner_version       = var.gitlab_runner_version
   }))
   user_data_replace_on_change = true
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
 
   tags = merge(
     local.tags,
@@ -218,6 +243,12 @@ resource "aws_launch_template" "gitlab_runner_instance" {
   network_interfaces {
     security_groups             = concat([aws_security_group.runner.id], local.runner_instances[each.key].security_group_ids)
     associate_public_ip_address = local.runner_instances[each.key].private_address_only == false
+  }
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
   }
 
   tag_specifications {
